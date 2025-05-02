@@ -168,6 +168,7 @@ nano scripts/start.sh
 ```
 在最后一行docker compose up后面添加 -d
 * ctrl+O保存，回车，ctrl+x退出
+  
 ![c113b36e2fef5fcdbde2b52d6439340](https://github.com/user-attachments/assets/5c872d0d-4bfa-4f69-915a-988af1e34b2a)
 
 
