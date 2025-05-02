@@ -194,5 +194,28 @@ docker compose logs -fn 100
 打开https://explorer.zkwasmhub.com  
 网站输入刚才私钥的钱包地址
 
-
+# 如果内存达标还提示内存不足
+* 1 手动设置 WSL2 最大内存上限为 100GB+
+打开C:\Users\你的用户名\ 编辑 .wslconfig文件。如果看不到名为 .wslconfig 的文件，就新建一个：
+用记事本打开它，内容全部替换为：
+```bash
+[wsl2]
+memory=120GB        # 最大给 WSL2 分配 120GB 内存
+processors=20       # 给 WSL2 分配 20 核 CPU
+swap=16GB           # 可选：16GB 交换分区
+localhostForwarding=true
+```
+保存并退出
+* 2  完全重启 WSL2＆Docker Desktop
+  关闭所有 WSL 终端窗口
+  在 Windows PowerShell（管理员） 或 普通 PowerShell 执行：
+  ```bash
+  wsl --shutdown
+  ```
+ * 3 启动 Docker Desktop
+ * 4 再打开一个 WSL2 终端（如 Ubuntu），执行
+```bash
+ free -h
+```
+此时你应该能看到内存 total 接近 120GiB
 
