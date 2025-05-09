@@ -197,6 +197,7 @@ docker compose logs -fn 100
 网站输入刚才私钥的钱包地址
 
 # 如果内存达标还提示内存不足
+## 方法一
 * 1 手动设置 WSL2 最大内存上限为 100GB+
 打开C:\Users\你的用户名\ 编辑 .wslconfig文件。如果看不到名为 .wslconfig 的文件，就新建一个：
 用记事本打开它，内容全部替换为：
@@ -219,5 +220,45 @@ localhostForwarding=true
 ```bash
  free -h
 ```
+
+## 方法二
+在 Windows 上打开记事本（或你喜欢的编辑器）：
+
+按下 Win + R，输入：
+
+ ```bash
+notepad %UserProfile%\.wslconfig
+```
+粘贴以下内容（自定义设置）：
+
+ ```bash
+ini
+
+[wsl2]
+memory=128GB
+processors=all
+swap=16GB
+swapFile=C:\\swap-wsl2.vhdx
+ ```
+
+
+保存并关闭记事本。
+
+重启 WSL2（或系统）使其生效：
+
+ ```bash
+wsl --shutdown
+ ```
+然后重新启动你的 Ubuntu 实例。
+
+✅ 验证是否生效
+回到 WSL 中运行：
+
+ ```bash
+free -h
+nproc
+```
+
+确认内存和 CPU 核心数量是否变更。
 此时你应该能看到内存 total 接近 120GiB
 
