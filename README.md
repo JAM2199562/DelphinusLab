@@ -193,7 +193,7 @@ docker compose logs -fn 100
   * 查看所有docker容器: `docker ps -a`
 
 ## 第八步: 检查证明者节点统计数据
-打开https://explorer.zkwasmhub.com  
+打开https://explorer.zkwasmhub.com/nodes
 网站输入刚才私钥的钱包地址
 
 # 如果内存达标还提示内存不足
