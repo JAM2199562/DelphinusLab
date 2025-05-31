@@ -1,0 +1,292 @@
+---
+- name: DelphinusLab 自动化安装和配置
+  hosts: all
+  become: yes
+  vars:
+    hugepages_count: 15000
+    server_url: "https://rpc.zkwasmhub.com:8090"
+    # 私钥变量 - 通过命令行参数 -e "private_key=your_key" 传入
+    private_key: "{{ private_key | default('YOUR_PRIVATE_KEY_HERE') }}"
+    # CUDA安装开关 - 默认为false，通过 -e "install_cuda=true" 启用
+    install_cuda: "{{ install_cuda | default(false) }}"
+  
+  tasks:
+    # 第一步: 配置环境变量
+    - name: 配置 /etc/environment 文件
+      copy:
+        content: |
+          PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        dest: /etc/environment
+        backup: yes
+      tags: environment
+
+    # 第二步: 更新系统和安装基础软件包
+    - name: 更新系统软件包
+      apt:
+        update_cache: yes
+        upgrade: yes
+        cache_valid_time: 3600
+      tags: update
+
+    - name: 安装基础软件包
+      apt:
+        name:
+          - curl
+          - iptables
+          - build-essential
+          - git
+          - wget
+          - lz4
+          - jq
+          - make
+          - gcc
+          - nano
+          - automake
+          - autoconf
+          - tmux
+          - htop
+          - nvme-cli
+          - libgbm1
+          - pkg-config
+          - libssl-dev
+          - libleveldb-dev
+          - tar
+          - clang
+          - bsdmainutils
+          - ncdu
+          - unzip
+          - ca-certificates
+          - gnupg
+        state: present
+      tags: packages
+
+    # 第三步: 安装 Docker
+    - name: 移除旧版本 Docker 包
+      apt:
+        name:
+          - docker.io
+          - docker-doc
+          - docker-compose
+          - podman-docker
+          - containerd
+          - runc
+        state: absent
+      tags: docker
+
+    - name: 创建 Docker GPG 密钥目录
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      tags: docker
+
+    - name: 添加 Docker GPG 密钥
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+      tags: docker
+
+    - name: 添加 Docker 仓库
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+      tags: docker
+
+    - name: 更新软件包缓存 (Docker仓库)
+      apt:
+        update_cache: yes
+      tags: docker
+
+    - name: 安装 Docker 组件
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+      tags: docker
+
+    # 第四步: 安装 NVIDIA CUDA (可选，默认跳过)
+    - name: 获取系统分发版本信息
+      shell: . /etc/os-release && echo $ID$VERSION_ID
+      register: distribution
+      changed_when: false
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 添加 NVIDIA Container Toolkit GPG 密钥
+      shell: |
+        curl -s -L https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 添加 NVIDIA Container Toolkit 仓库
+      shell: |
+        curl -s -L https://nvidia.github.io/libnvidia-container/{{ distribution.stdout }}/libnvidia-container.list | \
+        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#' | \
+        tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
+      args:
+        creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 更新软件包缓存 (NVIDIA仓库)
+      apt:
+        update_cache: yes
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 安装 NVIDIA CUDA toolkit
+      apt:
+        name: nvidia-cuda-toolkit
+        state: present
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 安装 NVIDIA Container Toolkit
+      apt:
+        name: nvidia-container-toolkit
+        state: present
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 配置 NVIDIA Container Runtime
+      shell: nvidia-ctk runtime configure --runtime=docker --set-as-default
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 卸载 NVIDIA 内核模块 (为重启做准备)
+      shell: rmmod nvidia_drm nvidia_modeset nvidia_uvm nvidia || true
+      ignore_errors: yes
+      when: install_cuda | bool
+      tags: cuda
+
+    - name: 启用并重启 Docker 服务
+      systemd:
+        name: docker
+        enabled: yes
+        state: restarted
+      tags: docker
+
+    # 第五步: 设置 HugePages
+    - name: 临时设置 HugePages
+      sysctl:
+        name: vm.nr_hugepages
+        value: "{{ hugepages_count }}"
+        state: present
+      tags: hugepages
+
+    - name: 永久设置 HugePages
+      lineinfile:
+        path: /etc/sysctl.conf
+        line: "vm.nr_hugepages={{ hugepages_count }}"
+        regexp: '^vm\.nr_hugepages='
+        state: present
+      tags: hugepages
+
+    - name: 应用 sysctl 配置
+      command: sysctl -p
+      tags: hugepages
+
+    # 第六步: 克隆和配置 Prover
+    - name: 克隆 prover-node-docker 仓库
+      git:
+        repo: https://github.com/DelphinusLab/prover-node-docker
+        dest: /opt/prover-node-docker
+        force: yes
+      become_user: root
+      tags: prover
+
+    - name: 创建 prover_config.json 配置文件
+      copy:
+        content: |
+          {
+            "server_url": "{{ server_url }}",
+            "priv_key": "{{ private_key }}"
+          }
+        dest: /opt/prover-node-docker/prover_config.json
+      tags: prover
+
+    - name: 创建 dry_run_config.json 配置文件
+      copy:
+        content: |
+          {
+            "server_url": "{{ server_url }}",
+            "priv_key": "{{ private_key }}"
+          }
+        dest: /opt/prover-node-docker/dry_run_config.json
+      tags: prover
+
+    - name: 修改启动脚本 (添加 -d 参数)
+      lineinfile:
+        path: /opt/prover-node-docker/scripts/start.sh
+        regexp: '^docker compose up$'
+        line: 'docker compose up -d'
+        backup: yes
+      tags: prover
+
+    - name: 构建 Docker 镜像
+      command: bash scripts/build_image.sh
+      args:
+        chdir: /opt/prover-node-docker
+      tags: build
+
+    # 运行节点
+    - name: 启动 Prover 节点
+      command: bash scripts/start.sh
+      args:
+        chdir: /opt/prover-node-docker
+      tags: start
+
+  # 后置提醒任务
+  post_tasks:
+    - name: 显示CUDA跳过提醒
+      debug:
+        msg: |
+          ⚠️  CUDA安装已跳过！
+          如果需要安装CUDA，请运行：
+          ansible-playbook -i inventory.ini delphinus-setup.yml -e "install_cuda=true"
+      when: not (install_cuda | bool)
+
+    - name: 显示私钥配置状态
+      debug:
+        msg: |
+          {% if private_key == 'YOUR_PRIVATE_KEY_HERE' %}
+          ⚠️  私钥未设置！
+          请通过以下方式重新运行并设置私钥：
+          ansible-playbook -i inventory.ini delphinus-setup.yml -e "private_key=你的私钥"
+          {% else %}
+          ✅ 私钥已自动配置完成
+          {% endif %}
+
+    - name: 显示安装完成信息和注意事项
+      debug:
+        msg: |
+          ================================
+          DelphinusLab 安装完成！
+          ================================
+          
+          {% if install_cuda | bool %}
+          ⚠️  重要提醒：
+          某些步骤可能需要重启系统才能完全生效，特别是NVIDIA驱动和内核模块。
+          {% endif %}
+          
+          🔧 验证安装：
+          - NVIDIA驱动: nvidia-smi
+          - CUDA toolkit: nvcc --version
+          - HugePages: grep Huge /proc/meminfo
+          
+          📋 管理命令：
+          - 查看日志: cd /opt/prover-node-docker && docker compose logs -fn 100
+          - 停止节点: cd /opt/prover-node-docker && docker compose down -v
+          - 重启节点: cd /opt/prover-node-docker && docker compose up -d
+          
+          🌐 检查节点状态：
+          访问 https://explorer.zkwasmhub.com/nodes 输入你的钱包地址 
