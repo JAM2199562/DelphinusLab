@@ -1,0 +1,180 @@
+---
+- name: DelphinusLab Docker镜像构建并推送到Docker Hub
+  hosts: all
+  become: yes
+  vars:
+    # 构建相关配置
+    build_dir: "/opt/prover-node-docker"
+    # Docker Hub配置 - 通过命令行参数传入
+    docker_username: "{{ docker_username | default('') }}"
+    docker_password: "{{ docker_password | default('') }}"
+    image_tag: "{{ image_tag | default('latest') }}"
+  
+  tasks:
+    # 确保基础环境
+    - name: 更新系统软件包
+      apt:
+        update_cache: yes
+        upgrade: yes
+        cache_valid_time: 3600
+      tags: update
+
+    - name: 安装构建依赖
+      apt:
+        name:
+          - git
+          - curl
+          - wget
+          - build-essential
+        state: present
+      tags: dependencies
+
+    # 安装Docker (如果构建机器上没有)
+    - name: 检查Docker是否已安装
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+      tags: docker
+
+    - name: 安装Docker (如果未安装)
+      block:
+        - name: 移除旧版本Docker包
+          apt:
+            name:
+              - docker.io
+              - docker-doc
+              - docker-compose
+              - podman-docker
+              - containerd
+              - runc
+            state: absent
+
+        - name: 安装依赖包
+          apt:
+            name:
+              - ca-certificates
+              - curl
+              - gnupg
+            state: present
+
+        - name: 创建Docker GPG密钥目录
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: '0755'
+
+        - name: 添加Docker GPG密钥
+          shell: |
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            chmod a+r /etc/apt/keyrings/docker.gpg
+          args:
+            creates: /etc/apt/keyrings/docker.gpg
+
+        - name: 添加Docker仓库
+          shell: |
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          args:
+            creates: /etc/apt/sources.list.d/docker.list
+
+        - name: 更新软件包缓存
+          apt:
+            update_cache: yes
+
+        - name: 安装Docker组件
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+
+        - name: 启动Docker服务
+          systemd:
+            name: docker
+            enabled: yes
+            state: started
+      when: docker_check.rc != 0
+      tags: docker
+
+    # 构建相关任务
+    - name: 克隆prover-node-docker仓库
+      git:
+        repo: https://github.com/DelphinusLab/prover-node-docker
+        dest: "{{ build_dir }}"
+        force: yes
+      tags: clone
+
+    - name: 检查构建脚本是否存在
+      stat:
+        path: "{{ build_dir }}/scripts/build_image.sh"
+      register: build_script
+      tags: build
+
+    - name: 构建Docker镜像
+      command: bash scripts/build_image.sh
+      args:
+        chdir: "{{ build_dir }}"
+      when: build_script.stat.exists
+      tags: build
+
+    - name: 获取构建的镜像信息
+      shell: docker images --format "{{.Repository}}:{{.Tag}}" | grep -v "<none>" | head -5
+      register: built_images
+      tags: build
+
+    # 推送到Docker Hub
+    - name: 登录Docker Hub
+      docker_login:
+        username: "{{ docker_username }}"
+        password: "{{ docker_password }}"
+      when: 
+        - docker_username != ''
+        - docker_password != ''
+      tags: push
+
+    - name: 标记并推送镜像到Docker Hub
+      shell: |
+        # 获取本地构建的镜像名称并推送到Docker Hub
+        docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "(prover|delphinus)" | while IFS= read -r local_image; do
+          # 提取镜像名称（去掉tag部分）
+          image_name=$(echo "$local_image" | cut -d':' -f1)
+          # 创建Docker Hub标签
+          hub_tag="{{ docker_username }}/${image_name}:{{ image_tag }}"
+          echo "标记镜像: $local_image -> $hub_tag"
+          docker tag "$local_image" "$hub_tag"
+          echo "推送镜像: $hub_tag"
+          docker push "$hub_tag"
+        done
+      when: 
+        - docker_username != ''
+        - docker_password != ''
+      register: push_result
+      tags: push
+
+  post_tasks:
+    - name: 显示构建完成信息
+      debug:
+        msg: |
+          ================================
+          Docker镜像构建并推送完成！
+          ================================
+          
+          📦 构建的镜像：
+          {{ built_images.stdout }}
+          
+          {% if docker_username != '' %}
+          🚀 推送结果：
+          {{ push_result.stdout if push_result is defined else '未执行推送' }}
+          
+          💡 部署命令：
+          ansible-playbook -i inventory.ini delphinus-setup.yml \
+            -e "private_key=你的私钥" \
+            -e "image_tag={{ image_tag }}" \
+            -e "docker_username={{ docker_username }}"
+          {% else %}
+          ⚠️  未配置Docker Hub凭据，镜像未推送
+          请设置: -e "docker_username=用户名" -e "docker_password=密码"
+          {% endif %} 

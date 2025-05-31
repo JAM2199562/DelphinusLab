@@ -1,5 +1,5 @@
 ---
-- name: DelphinusLab 自动化安装和配置
+- name: DelphinusLab 部署配置 (从Docker Hub拉取镜像)
   hosts: all
   become: yes
   vars:
@@ -9,6 +9,10 @@
     private_key: "{{ private_key | default('YOUR_PRIVATE_KEY_HERE') }}"
     # CUDA安装开关 - 默认为false，通过 -e "install_cuda=true" 启用
     install_cuda: "{{ install_cuda | default(false) }}"
+    # Docker Hub镜像配置
+    docker_username: "{{ docker_username | default('') }}"
+    image_tag: "{{ image_tag | default('latest') }}"
+    deploy_dir: "/opt/prover-node-docker"
   
   tasks:
     # 第一步: 配置环境变量
@@ -195,14 +199,33 @@
       command: sysctl -p
       tags: hugepages
 
-    # 第六步: 克隆和配置 Prover
-    - name: 克隆 prover-node-docker 仓库
+    # 第六步: 准备部署环境和配置
+    - name: 创建部署目录
+      file:
+        path: "{{ deploy_dir }}"
+        state: directory
+        mode: '0755'
+      tags: deploy
+
+    - name: 克隆prover-node-docker仓库 (获取配置文件和脚本)
       git:
         repo: https://github.com/DelphinusLab/prover-node-docker
-        dest: /opt/prover-node-docker
+        dest: "{{ deploy_dir }}"
         force: yes
-      become_user: root
-      tags: prover
+      tags: deploy
+
+    # 从Docker Hub拉取镜像
+    - name: 从Docker Hub拉取Docker镜像
+      shell: |
+        if [ "{{ docker_username }}" != "" ]; then
+          echo "从Docker Hub拉取镜像: {{ docker_username }}/prover-node:{{ image_tag }}"
+          docker pull {{ docker_username }}/prover-node:{{ image_tag }} || echo "镜像拉取失败，请检查镜像名称和标签"
+        else
+          echo "错误: 未指定docker_username，无法拉取镜像"
+          exit 1
+        fi
+      register: pull_result
+      tags: pull
 
     - name: 创建 prover_config.json 配置文件
       copy:
@@ -211,8 +234,8 @@
             "server_url": "{{ server_url }}",
             "priv_key": "{{ private_key }}"
           }
-        dest: /opt/prover-node-docker/prover_config.json
-      tags: prover
+        dest: "{{ deploy_dir }}/prover_config.json"
+      tags: deploy
 
     - name: 创建 dry_run_config.json 配置文件
       copy:
@@ -221,28 +244,22 @@
             "server_url": "{{ server_url }}",
             "priv_key": "{{ private_key }}"
           }
-        dest: /opt/prover-node-docker/dry_run_config.json
-      tags: prover
+        dest: "{{ deploy_dir }}/dry_run_config.json"
+      tags: deploy
 
     - name: 修改启动脚本 (添加 -d 参数)
       lineinfile:
-        path: /opt/prover-node-docker/scripts/start.sh
+        path: "{{ deploy_dir }}/scripts/start.sh"
         regexp: '^docker compose up$'
         line: 'docker compose up -d'
         backup: yes
-      tags: prover
-
-    - name: 构建 Docker 镜像
-      command: bash scripts/build_image.sh
-      args:
-        chdir: /opt/prover-node-docker
-      tags: build
+      tags: deploy
 
     # 运行节点
-    - name: 启动 Prover 节点
+    - name: 启动 Prover 节点 (使用Docker Hub镜像)
       command: bash scripts/start.sh
       args:
-        chdir: /opt/prover-node-docker
+        chdir: "{{ deploy_dir }}"
       tags: start
 
   # 后置提醒任务
@@ -266,16 +283,29 @@
           ✅ 私钥已自动配置完成
           {% endif %}
 
-    - name: 显示安装完成信息和注意事项
+    - name: 显示镜像拉取结果
+      debug:
+        msg: |
+          📦 镜像拉取结果：
+          {{ pull_result.stdout }}
+
+    - name: 显示部署完成信息和注意事项
       debug:
         msg: |
           ================================
-          DelphinusLab 安装完成！
+          DelphinusLab 部署完成！
           ================================
           
           {% if install_cuda | bool %}
           ⚠️  重要提醒：
           某些步骤可能需要重启系统才能完全生效，特别是NVIDIA驱动和内核模块。
+          {% endif %}
+          
+          🐳 使用的镜像：
+          {% if docker_username != '' %}
+          {{ docker_username }}/prover-node:{{ image_tag }}
+          {% else %}
+          未指定镜像信息
           {% endif %}
           
           🔧 验证安装：
@@ -284,9 +314,9 @@
           - HugePages: grep Huge /proc/meminfo
           
           📋 管理命令：
-          - 查看日志: cd /opt/prover-node-docker && docker compose logs -fn 100
-          - 停止节点: cd /opt/prover-node-docker && docker compose down -v
-          - 重启节点: cd /opt/prover-node-docker && docker compose up -d
+          - 查看日志: cd {{ deploy_dir }} && docker compose logs -fn 100
+          - 停止节点: cd {{ deploy_dir }} && docker compose down -v
+          - 重启节点: cd {{ deploy_dir }} && docker compose up -d
           
           🌐 检查节点状态：
           访问 https://explorer.zkwasmhub.com/nodes 输入你的钱包地址 
